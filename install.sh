@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ovz-tune 安装器
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/ovz-tune/main/install.sh)
-#   curl -fsSL https://raw.githubusercontent.com/pingmike2/ovz-tune/main/install.sh | bash -s -- --apply
+#   bash <(curl -fsSL https://raw.githubusercontent.com/jyucoeng/ovz-tune/main/install.sh)
+#   curl -fsSL https://raw.githubusercontent.com/jyucoeng/ovz-tune/main/install.sh | bash -s -- --apply
 #
 # 下载 ovz-tune.sh 到 /usr/local/bin/ovz-tune，校验语法后安装，再按参数运行。
 # 可用环境变量覆盖：REPO、BRANCH、BIN。
 #
 set -euo pipefail
 
-REPO="${REPO:-pingmike2/ovz-tune}"
+REPO="${REPO:-jyucoeng/ovz-tune}"
 BRANCH="${BRANCH:-main}"
 BIN="${BIN:-/usr/local/bin/ovz-tune}"
 URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/ovz-tune.sh"

@@ -1,130 +1,79 @@
 # ovz-tune
 
-一键调优 Linux 小鸡的 TCP / 系统参数，**自适应 OpenVZ、LXC/Incus、KVM**，支持 Debian / Ubuntu。
+给 Debian / Ubuntu 小鸡（OpenVZ / LXC / KVM 都行）做一次系统调优：内核参数、BBR + fq、路径 MTU、journald 限额、文件句柄、时区/主机名/swap。
 
-不猜、不硬写：每个参数先读再试写，写不进去就跳过并告诉你原因。所以同一份脚本在容器里不会刷一屏 `Read-only file system`。
+改完之后写在哪：
 
-![shellcheck](https://github.com/pingmike2/ovz-tune/actions/workflows/shellcheck.yml/badge.svg)
-![license](https://img.shields.io/badge/license-MIT-blue)
-![platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-red)
-
-## 一键
-
-带菜单，先看清楚再决定：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/ovz-tune/main/install.sh)
-```
-
-不交互，直接调优：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/pingmike2/ovz-tune/main/install.sh | bash -s -- --apply
-```
-
-装上之后随时用：
-
-```bash
-ovz-tune              # 菜单
-ovz-tune --apply      # 调优
-ovz-tune --rollback   # 撤销
-```
-
-> 不加 `--apply` 永远只是演练，只打印计划，不改任何东西。
-
-## 它做什么
-
-| 类别 | 内容 |
+| 文件 | 内容 |
 |---|---|
-| 网络栈 | `somaxconn`、`tcp_fastopen`、本地端口范围、`tcp_fin_timeout`、`tw_reuse`、keepalive、`mtu_probing`、`slow_start_after_idle`、`tcp_notsent_lowat` |
-| 队列与缓冲区 | `netdev_max_backlog`、`tcp_max_syn_backlog`、`rmem/wmem`（按内存 8M / 16M / 32M 定档，**<512MB 保留内核默认**） |
-| 拥塞控制 | 内核支持就上 `bbr` + `fq`，不支持就明确告诉你为什么不行 |
-| 路径 MTU | `--mtu auto`：逐个试 1500/1460/1450/1444/1436/1400，比 TLS 握手耗时，只在发现黑洞时改 |
-| 连接跟踪 | `nf_conntrack_max` |
-| 内存回收 | `swappiness`、`vfs_cache_pressure`、`dirty_ratio`（容器拒绝就跳过） |
-| 日志 | journald 限额，按内存 64M / 100M / 200M 定档 |
-| 句柄 | `nofile 65535` |
-| SSH | keepalive 60s，`sshd -t` 校验通过才 reload；socket 激活模式自动识别 |
-| 容器清理 | 清 `ssh@*` / `session-*` 死连接残留；容器里 mask 永远起不来的 `systemd-hostnamed` |
-| 其他（可选） | 时区、主机名（含 cloud-init 防回滚）、swap、apt 升级（EOL 系统自动切 archive 源） |
+| `/etc/sysctl.d/99-vps-tuning.conf` | 内核参数（带 `# BEGIN/END vps-tune` 标记） |
+| `/etc/systemd/journald.conf.d/99-vps-limit.conf` | journald 磁盘上限 |
+| `/etc/ssh/sshd_config.d/99-vps-keepalive.conf` | sshd 保活与登录策略 |
+| `/etc/security/limits.conf` | `nofile 65535` 段 |
+| `/etc/systemd/system/vps-tune-mtu.service` | 只在用过 `--mtu` 时才有 |
 
-## 各虚拟化能改多少（实测）
+备份在 `/var/backups/vps-tune/`。
 
-| 环境 | 生效 | 跳过 | 说明 |
-|---|---|---|---|
-| **KVM**（Debian 11, 461MB） | 24 | 0 | 全部可调，含 BBR + fq |
-| **LXC**（Debian 11） | 18 | 5 | `net.core.*` 被宿主锁，`net.ipv4.*` 可用 |
-| **Incus/LXC + NAT**（Debian 11, 256MB, 限 0.25 核） | 12 | 10 | 连 `net.core.*` 键都不存在；BBR 不可用；qdisc 固定 `noqueue` |
-| **OpenVZ**（Debian 12, 1.5GB） | 3 | 4 | 只剩 `somaxconn` / `fastopen` / 端口范围 |
+## 安装
 
-OpenVZ 的 `vm.*` 会返回 `EINVAL`，`swapon` 返回 `Operation not permitted`，`tcp_congestion_control` 这个键根本不存在——**内核是共享的**，这些由宿主决定，不是配置问题。脚本不去硬碰，直接标注。
-
-### 容器 / NAT 小鸡额外做的
-
-- 认出"只有私网地址"的形态，环境里标 `· 私网 NAT`，MTU 由宿主决定时不去改
-- 清掉 `ssh@*` 残留（一台 217 天的机器上堆了 **190 个**失败单元，全是扫描器打出来的死连接），但不碰真正的服务失败
-- 容器里 `systemd-hostnamed` 必然 `status=225/NETWORK`，顺手 mask，代价是 `hostnamectl` 不可用
-- apt 升级走独立 `systemd-run` unit：容器里 SSH 一断，前台 apt 会被 logind 连坐杀掉，dpkg 可能半途而废
-- Debian 11 这类已 EOL 的系统，源 404 时自动切 `archive.debian.org`
-
-## 参数
-
+```sh
+# 装成 ovz-tune 命令（之后可反复用、可离线）
+curl -fsSL https://raw.githubusercontent.com/jyucoeng/ovz-tune/main/install.sh | bash
 ```
---apply                 真正执行（默认是演练）
---dry-run               演练
---tz Asia/Shanghai      顺便设时区
---hostname myvps        顺便改主机名（自动处理 /etc/hosts 和 cloud-init）
---journald-max 200M     指定日志上限
---swap 1024             尝试加 1G swap（容器里会自动放弃）
---mtu auto              实测最优 MTU，只在发现黑洞时才改
---mtu 1400              直接指定 MTU 并开机持久化
---upgrade               顺便 apt 升级（可能重启服务，默认不做）
---rollback              撤销本脚本的改动
+
+装到 `/usr/local/bin/ovz-tune`。不想装就直接跑：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jyucoeng/ovz-tune/main/ovz-tune.sh | bash -s -- --apply
 ```
+
+## 用法
+
+```sh
+ovz-tune                    # 无参数：有终端进交互菜单，否则只演练
+ovz-tune --apply            # 执行推荐调优
+ovz-tune -h                 # 全部参数
+```
+
+| 参数 | 作用 |
+|---|---|
+| `--apply` | 真执行。不加就只演练 |
+| `--rollback` | 撤销本脚本的所有改动 |
+| `--upgrade` | 顺带 `apt upgrade`（可能重启服务，默认不做） |
+| `--tz Asia/Shanghai` | 同时设时区 |
+| `--hostname xxx` | 同时改主机名 |
+| `--journald-max 200M` | 指定 journald 上限（默认按内存自动） |
+| `--swap 1024` | 尝试加 1G swap（容器里会自动放弃） |
+| `--mtu auto\|1400` | 实测路径 MTU 并持久化，或直接指定 |
+
+**默认会改 sshd**（`PermitRootLogin yes`、`PasswordAuthentication yes`）。公网机器想跳过，用 [vps-tune](https://github.com/jyucoeng/vps-tune) 跑，它默认带 `--no-ssh`。
 
 ## 回滚
 
-```bash
+```sh
 ovz-tune --rollback
 ```
 
-删除脚本生成的 drop-in、清理 `limits.conf` 标记段、重载 sysctl。原文件备份在 `/var/backups/ovz-tune/`。
+删掉上表所有文件、清 `limits.conf` 里的段、qdisc 回 `fq_codel`、移除 MTU unit；老版 `ovz-tune` 留下的同名文件也一并清。
 
-注意：回滚只撤**持久化配置**，运行中的参数要重启才回到系统默认；主机名 / 时区 / swap 不自动还原。
+不自动还原：主机名、时区、swap、已经进内核的参数（重启才回默认）、当前 MTU。
 
-## 路径 MTU 黑洞（`--mtu auto`）
+## 卸载
 
-套壳 / 反代 / WireGuard 中转的机器常见症状：握手 3 秒起步、TLS 卡死，实际是路径 MTU 黑洞（ICMP too-big 被吞）。原理是 A/B 改 MTU 看 TLS 握手时间：
-
-```bash
-for m in 1500 1450 1444 1436 1400; do
-  ip link set dev eth0 mtu $m
-  echo -n "mtu=$m "
-  curl -s -o /dev/null -w 'tls=%{time_appconnect}\n' https://www.cloudflare.com
-done
+```sh
+rm -f /usr/local/bin/ovz-tune
 ```
 
-`--mtu auto` 就是把这段自动化：每个候选值取 3 次采样的中位数，最后只在**基线 > 0.5s 且最优值 < 0.15s** 时才切换（真黑洞是 3 秒级，正常抖动不会触发误判），并写一个 `ovz-tune-mtu.service` 开机持久化。判定为正常时保持原值不动。
+只删命令，**不还原系统改动**；要撤调优先 `--rollback`。
 
-```bash
-ovz-tune --apply --mtu auto     # 实测并按需采用
-ovz-tune --apply --mtu 1400     # 已知答案，直接指定
+## 被外部调用
+
+[vps-tune](https://github.com/jyucoeng/vps-tune) 的 Debian/Ubuntu 后端 `tune-debian.sh` 就是本脚本（v1.2.0，加了 `--no-ssh` / `--no-journald` / `--no-clean`）。链路：
+
+```sh
+sb opt          → vps-tune --apply --no-ssh → tune-debian.sh
 ```
 
-veth 类网卡（宿主控制 MTU）会直接跳过并说明原因。
+## 免责
 
-## 它不做什么
-
-- 不重启 nginx / sing-box / argo 等业务服务；ssh 也只 reload
-- 不改 `PermitRootLogin`、不装防火墙、不碰 fail2ban
-- 不换内核、不改 `/etc/resolv.conf`
-- 不装任何第三方面板或"探长"类工具
-
-## 要求
-
-- Debian 10+ / Ubuntu 18.04+，root 权限
-- 需要 `bash`、`iproute2`、`systemd`（无 systemd 的会自动跳过相关步骤）
-
-## License
-
-MIT
+按「现状」提供，无担保。会改 sysctl / journald / limits.conf / sshd 和网络队列，先跑演练自己备份。License: MIT
